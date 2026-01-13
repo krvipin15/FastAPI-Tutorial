@@ -1,63 +1,97 @@
-# Define the project name for this Docker Compose setup
+# Give this Compose project a stable, human-readable name.
+# Docker will prefix networks, volumes, and containers with this.
 name: fastapi-dev
 
 services:
-  # PostgreSQL database service
+  # -------------------------------
+  # PostgreSQL database container
+  # -------------------------------
   db:
-    # Use PostgreSQL version 18 image
+    # Use the official PostgreSQL 18 image
     image: postgres:18
-    # Assign a custom name to the container for easier identification
+
+    # Fixed container name for easier debugging / psql access
     container_name: fastapi-postgres-db
-    # Set environment variables for PostgreSQL configuration
-    # Use values from .env file, with fallback defaults if not defined
+
+    # Environment variables used by the Postgres image on first startup
+    # These control initial user, password, and database creation.
     environment:
-      POSTGRES_USER: ${USER:-vipin}      # Database user (defaults to 'postgres')
-      POSTGRES_PASSWORD: ${PASSWORD:-password}  # Database password (defaults to 'password')
-      POSTGRES_DB: ${DATABASE:-fastapi_db}     # Database name (defaults to 'fastapi_db')
-    # Map port 5433 on the host to port 5432 in the container (to avoid conflicts)
+      POSTGRES_USER: ${USER:-vipin}            # DB user (defaults to "vipin")
+      POSTGRES_PASSWORD: ${PASSWORD:-password} # DB password
+      POSTGRES_DB: ${DATABASE:-fastapi_db}     # Initial database name
+
+    # Expose Postgres to the host on port 5433.
+    # Inside Docker, other services still connect via "db:5432".
     ports:
       - "5433:5432"
-    # Persist database data using a named volume
+
+    # Persist database files across container restarts.
+    # For Postgres 18+, the correct mount point is /var/lib/postgresql.
     volumes:
       - postgres_data:/var/lib/postgresql
-    # Health check to verify the database is ready to accept connections
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${USER:-vipin} -d ${DATABASE:-fastapi_db}"]  # Test command to check DB readiness
-      interval: 25s    # Check every 25 seconds
-      timeout: 5s      # Wait up to 5 seconds for the test to complete
-      retries: 10      # Retry 10 times before marking as unhealthy
 
-  # Migration service - runs once and exits
+    # Healthcheck ensures Postgres is actually ready before dependents start.
+    # docker-compose can block other services until this succeeds.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${USER:-vipin} -d ${DATABASE:-fastapi_db}"]
+      interval: 25s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------
+  # One-shot migration runner service
+  # ---------------------------------
   migrate:
+    # Uses the same image as the API so Alembic and your app code exist
     build:
       context: .
       dockerfile: dockerfile
+
+    # Load DB credentials and DATABASE_URL from .env
     env_file:
       - .env
+
+    # Run Alembic once, then exit.
+    # This applies all migrations to the database.
     command: ["uv", "run", "alembic", "upgrade", "head"]
+
+    # Do not start until Postgres is healthy
     depends_on:
       db:
         condition: service_healthy
 
-  # FastAPI application service
+  # -------------------------------
+  # FastAPI application container
+  # -------------------------------
   api:
-    # Build the application from the current directory using the specified Dockerfile
+    # Build the FastAPI image
     build:
       context: .
       dockerfile: dockerfile
-    # Load environment variables from the .env file
+
+    # Load environment variables (DATABASE_URL, etc.)
     env_file:
       - .env
-    # Map port 8000 on the host to port 8000 in the container
+
+    # Expose the API on localhost:8000
     ports:
       - "8000:8000"
-    # Wait for the database service to be healthy before starting the API
+
+    # Mount source code read-only for live reload in development
+    volumes:
+      - ./:/usr/src/app:ro
+
+    # Start FastAPI with auto-reload for development
+    command: ["uv", "run", "fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+    # Ensure DB is ready before the API starts
     depends_on:
       db:
         condition: service_healthy
 
-
-
-# Define named volumes for data persistence
+# -------------------------------
+# Named volumes
+# -------------------------------
 volumes:
-  postgres_data:  # Named volume to store PostgreSQL data persistently
+  # Persistent storage for PostgreSQL data
+  postgres_data:
