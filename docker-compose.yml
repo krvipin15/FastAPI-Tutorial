@@ -1,0 +1,63 @@
+# Define the project name for this Docker Compose setup
+name: fastapi-dev
+
+services:
+  # PostgreSQL database service
+  db:
+    # Use PostgreSQL version 18 image
+    image: postgres:18
+    # Assign a custom name to the container for easier identification
+    container_name: fastapi-postgres-db
+    # Set environment variables for PostgreSQL configuration
+    # Use values from .env file, with fallback defaults if not defined
+    environment:
+      POSTGRES_USER: ${USER:-vipin}      # Database user (defaults to 'postgres')
+      POSTGRES_PASSWORD: ${PASSWORD:-password}  # Database password (defaults to 'password')
+      POSTGRES_DB: ${DATABASE:-fastapi_db}     # Database name (defaults to 'fastapi_db')
+    # Map port 5433 on the host to port 5432 in the container (to avoid conflicts)
+    ports:
+      - "5433:5432"
+    # Persist database data using a named volume
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    # Health check to verify the database is ready to accept connections
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${USER:-vipin} -d ${DATABASE:-fastapi_db}"]  # Test command to check DB readiness
+      interval: 25s    # Check every 25 seconds
+      timeout: 5s      # Wait up to 5 seconds for the test to complete
+      retries: 10      # Retry 10 times before marking as unhealthy
+
+  # Migration service - runs once and exits
+  migrate:
+    build:
+      context: .
+      dockerfile: dockerfile
+    env_file:
+      - .env
+    command: ["uv", "run", "alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # FastAPI application service
+  api:
+    # Build the application from the current directory using the specified Dockerfile
+    build:
+      context: .
+      dockerfile: dockerfile
+    # Load environment variables from the .env file
+    env_file:
+      - .env
+    # Map port 8000 on the host to port 8000 in the container
+    ports:
+      - "8000:8000"
+    # Wait for the database service to be healthy before starting the API
+    depends_on:
+      db:
+        condition: service_healthy
+
+
+
+# Define named volumes for data persistence
+volumes:
+  postgres_data:  # Named volume to store PostgreSQL data persistently
